@@ -1,1 +1,300 @@
 
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Telefonla Barkod Oku → Kg Topla</title>
+<style>
+  :root { --pad: 14px; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: var(--pad); background:#fff; color:#111; }
+  header { position: sticky; top: 0; background: #fff; padding-bottom: 8px; z-index: 10; }
+  h1 { font-size: 18px; margin: 0 0 4px 0; }
+  .sub { color:#555; font-size: 13px; }
+  .card { border:1px solid #e8e8e8; border-radius:12px; padding:12px; margin-top:12px; }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .row > * { flex: none; }
+  .grow { flex: 1; }
+  button { appearance:none; padding:10px 14px; border-radius:10px; border:1px solid #ddd; background:#fafafa; font-size:14px; }
+  button:active { transform: translateY(1px); }
+  .primary { background:#0f62fe; color:#fff; border-color:#0f62fe; }
+  .danger { background:#ffebee; border-color:#ffcdd2; color:#a30000; }
+  .muted { color:#666; font-size:12px; }
+  .badge { padding:6px 10px; border:1px solid #ddd; border-radius:999px; font-weight:600; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:10px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:8px; border-bottom:1px solid #f0f0f0; }
+  th { background:#fafafa; position: sticky; top: 0; z-index: 5; }
+  #videoBox { position: relative; border-radius:12px; overflow:hidden; background:#000; }
+  video { width:100%; height:auto; display:block; }
+  .crosshair { position:absolute; inset:0; pointer-events:none; border:2px dashed rgba(255,255,255,.5); border-radius:12px; margin:6%; }
+  .overlay { position:absolute; right:8px; bottom:8px; display:flex; gap:8px; }
+  .chip { background:rgba(0,0,0,.55); color:#fff; padding:8px 10px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,.2); }
+  input[type="text"], input[type="number"] { width:100%; padding:12px; border-radius:10px; border:1px solid #ddd; font-size:16px; }
+  label { font-size:14px; }
+  .tiny { font-size:12px; color:#666; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Telefonla Barkod Oku → Kg Topla</h1>
+    <div class="sub">Kamerayı aç, barkodu hedefe getir; ağırlık otomatik eklensin. İnternet gerekmez.</div>
+  </header>
+
+  <section class="card">
+    <div class="row">
+      <span class="badge">Toplam: <span id="sumKg">0</span> kg</span>
+      <span class="badge">Adet: <span id="count">0</span></span>
+      <span class="grow"></span>
+      <button id="exportCsv">CSV</button>
+      <button id="clearAll" class="danger">Temizle</button>
+    </div>
+  </section>
+
+  <section class="card" id="scanCard">
+    <div id="videoBox">
+      <video id="video" playsinline muted></video>
+      <div class="crosshair"></div>
+      <div class="overlay">
+        <button id="torchBtn" class="chip">Flaş</button>
+        <button id="swapBtn" class="chip">Kamera</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="startBtn" class="primary">Kamerayı Aç</button>
+      <button id="stopBtn">Durdur</button>
+      <span class="muted" id="status">Hazır</span>
+    </div>
+    <details style="margin-top:8px">
+      <summary><b>Ağırlık Tespit Ayarı</b></summary>
+      <div class="grid">
+        <label><input type="radio" name="mode" value="auto5" checked> Son <b>5</b> rakam gram (…01250 → 1.250 kg)</label>
+        <label><input type="radio" name="mode" value="auto4"> Son <b>4</b> rakam gram (…1250 → 1.250 kg)</label>
+        <label><input type="radio" name="mode" value="tag"> Barkodda <code>W=</code>kg ara (…W=1.25)</label>
+        <label><input type="radio" name="mode" value="ask"> Her zaman kiloyu sor</label>
+      </div>
+      <div class="tiny">Not: Çoğu et etiketi ağırlığı barkodun sonuna gram olarak koyar. Farklıysa “Her zaman sor” seçin.</div>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <input id="manualCode" type="text" inputmode="numeric" placeholder="Barkodu elle gir (gerekirse)">
+      <input id="manualKg" type="text" inputmode="decimal" placeholder="Kg (örn: 1.250)">
+      <button id="addManual">Ekle</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Saat</th><th>Barkod</th><th>Kg</th></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </section>
+
+<script>
+(async function(){
+  const statusEl = document.getElementById('status');
+  const sumEl = document.getElementById('sumKg');
+  const countEl = document.getElementById('count');
+  const tbody = document.getElementById('tbody');
+  const video = document.getElementById('video');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const torchBtn = document.getElementById('torchBtn');
+  const swapBtn = document.getElementById('swapBtn');
+  const manualCode = document.getElementById('manualCode');
+  const manualKg = document.getElementById('manualKg');
+
+  const state = {
+    rows: [],
+    mode: 'auto5',
+    running: false,
+    stream: null,
+    useBack: true
+  };
+
+  function fmtKg(v){
+    return (Math.round(v * 1000) / 1000).toLocaleString('tr-TR', {minimumFractionDigits:3, maximumFractionDigits:3});
+  }
+  function addRow(code, kg){
+    state.rows.push({ts: Date.now(), code, kg});
+    render();
+  }
+  function render(){
+    tbody.innerHTML = '';
+    state.rows.forEach((r,i)=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${i+1}</td><td>${new Date(r.ts).toLocaleTimeString('tr-TR')}</td><td>${r.code}</td><td>${fmtKg(r.kg)}</td>`;
+      tbody.appendChild(tr);
+    });
+    const sum = state.rows.reduce((a,r)=>a+r.kg,0);
+    sumEl.textContent = fmtKg(sum);
+    countEl.textContent = state.rows.length;
+  }
+
+  function parseKgFromCode(code){
+    const mode = state.mode;
+    if(mode === 'ask') return null;
+    if(mode === 'tag'){
+      const m = code.match(/W\s*=\s*([0-9]+(?:[.,][0-9]+)?)/i);
+      if(m){
+        const val = parseFloat(m[1].replace(',', '.'));
+        return isFinite(val) && val>0 ? val : null;
+      }
+      return null;
+    }
+    const digits = code.replace(/\D+/g,'');
+    if(!digits) return null;
+    const n = (mode === 'auto4') ? 4 : 5;
+    if(digits.length < n) return null;
+    const grams = parseInt(digits.slice(-n),10);
+    if(!isFinite(grams) || grams<=0) return null;
+    return grams/1000;
+  }
+
+  document.querySelectorAll('input[name="mode"]').forEach(r=>{
+    r.addEventListener('change', e => state.mode = e.target.value);
+  });
+
+  document.getElementById('addManual').addEventListener('click', ()=>{
+    const c = (manualCode.value||'').trim();
+    const k = (manualKg.value||'').trim().replace(',','.');
+    const val = parseFloat(k);
+    if(!isFinite(val) || val<=0){ alert('Geçersiz kg'); return; }
+    addRow(c, val);
+    manualCode.value=''; manualKg.value='';
+  });
+
+  document.getElementById('clearAll').addEventListener('click', ()=>{
+    if(!confirm('Tüm kayıtları silmek istiyor musunuz?')) return;
+    state.rows = []; render();
+  });
+
+  document.getElementById('exportCsv').addEventListener('click', ()=>{
+    const header = ['Sira','TarihSaat','Barkod','Kg'];
+    const rows = state.rows.map((r,i)=>[
+      i+1,
+      new Date(r.ts).toLocaleString('tr-TR'),
+      r.code.replaceAll('"','""'),
+      fmtKg(r.kg).replace('.', ',')
+    ]);
+    let csv = header.join(';') + '\n';
+    for(const row of rows){ csv += row.map(x => `"${x}"`).join(';') + '\n'; }
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    a.download = `telefon_barkod_kayit_${ts}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  // Camera control
+  async function startCamera(){
+    try{
+      statusEl.textContent = 'Kamera açılıyor…';
+      const constraints = {
+        audio:false,
+        video: {
+          facingMode: state.useBack ? {ideal:'environment'} : {ideal:'user'},
+          width: {ideal: 1280},
+          height:{ideal: 720}
+        }
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      state.stream = stream;
+      video.srcObject = stream;
+      await video.play();
+      state.running = true;
+      statusEl.textContent = 'Tarama başladı';
+      scanLoop();
+    }catch(err){
+      console.error(err);
+      statusEl.textContent = 'Kamera açılamadı: ' + err.message;
+    }
+  }
+  function stopCamera(){
+    state.running = false;
+    if(state.stream){
+      for(const t of state.stream.getTracks()) t.stop();
+      state.stream = null;
+    }
+    statusEl.textContent = 'Durduruldu';
+  }
+
+  let torchOn = false;
+  async function toggleTorch(){
+    try{
+      const track = state.stream?.getVideoTracks?.()[0];
+      if(!track) return;
+      const caps = track.getCapabilities?.();
+      if(!caps || !caps.torch){ alert('Flaş desteklenmiyor'); return; }
+      torchOn = !torchOn;
+      await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+      torchBtn.textContent = torchOn ? 'Flaş Açık' : 'Flaş';
+    }catch(e){ alert('Flaş açılamadı'); }
+  }
+
+  torchBtn.addEventListener('click', toggleTorch);
+  swapBtn.addEventListener('click', async ()=>{
+    state.useBack = !state.useBack;
+    if(state.running){ stopCamera(); await startCamera(); }
+  });
+
+  startBtn.addEventListener('click', startCamera);
+  stopBtn.addEventListener('click', stopCamera);
+
+  // Barcode scanning loop (BarcodeDetector)
+  let detector = null;
+  if('BarcodeDetector' in window){
+    try{
+      const formats = ['ean_13','code_128','code_39','ean_8','upc_e','upc_a','itf','qr_code','codabar','data_matrix','pdf417'];
+      detector = new BarcodeDetector({formats});
+      statusEl.textContent = 'Hazır (kamera kapalı)';
+    }catch(e){
+      detector = null;
+      statusEl.textContent = 'Hazır (kamera kapalı)';
+    }
+  }else{
+    statusEl.textContent = 'Cihazda tarama API yok → Manuel giriş kullanılabilir.';
+  }
+
+  async function scanLoop(){
+    if(!state.running) return;
+    try{
+      if(detector){
+        const codes = await detector.detect(video);
+        if(codes && codes.length){
+          // En güvenilir olanı seç
+          const best = codes[0];
+          const raw = best.rawValue || '';
+          // Debounce: aynı kodu art arda yakalarsa 1 sn bekleyelim
+          if(!scanLoop.last || scanLoop.last.code !== raw || (Date.now()-scanLoop.last.ts)>1000){
+            let kg = parseKgFromCode(raw);
+            if(kg == null){
+              // Sor
+              const input = prompt(`Kg girin (${raw})`, '');
+              if(input !== null){
+                const v = parseFloat(String(input).replace(',','.'));
+                if(isFinite(v) && v>0){ addRow(raw, v); }
+              }
+            }else{
+              addRow(raw, kg);
+            }
+            scanLoop.last = {code: raw, ts: Date.now()};
+          }
+        }
+      }
+    }catch(e){
+      // yut – bazı karelerde hata olabilir
+    }
+    requestAnimationFrame(scanLoop);
+  }
+})();
+</script>
+</body>
+</html>
